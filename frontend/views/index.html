@@ -23,6 +23,10 @@
     async function submitJob() {
       const res = await fetch('/submit', { method: 'POST' });
       const data = await res.json();
+      if (data.job_id) {
+        document.getElementById('result').innerText = `Submitted: ${data.job_id}`;
+        return;
+      }
       document.getElementById('result').innerText = `Submitted: ${data.job_id}`;
       jobIds.push(data.job_id);
       pollJob(data.job_id);
@@ -31,6 +35,10 @@
     async function pollJob(id) {
       const res = await fetch(`/status/${id}`);
       const data = await res.json();
+      if (data.error) {
+        document.getElementById('result').innerText = `Error: ${data.error}`;
+        return;
+      }
       renderJob(id, data.status);
       if (data.status !== 'completed') {
         setTimeout(() => pollJob(id), 2000);
