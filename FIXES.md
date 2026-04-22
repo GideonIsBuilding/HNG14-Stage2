@@ -59,3 +59,20 @@ I:
 2. Remove the file from git history (`git rm --cached api/.env`).
 3. Rotate the Redis password immediately since it is already in the commit history.
 4. Provide an `api/.env.example` with placeholder values to document which variables are required.
+
+### 12. `worker/worker.py`
+Line 14: E302 expected 2 blank lines, found 1
+Line 19: E305 expected 2 blank lines after class or function definition, found 1
+Line 22: E302 expected 2 blank lines, found 1
+Line 28: E305 expected 2 blank lines after class or function definition, found 1
+I added a blank line on lines 13, 20, 23, and 31 to cater to the lint errors by flake8
+
+### 13. `api/main.py`
+Line 14: E302 expected 2 blank lines, found 1
+Line 21: E302 expected 2 blank lines, found 1
+I added a blank line on lines 13 and 22 to cater to the lint errors by flake8
+
+### 14. `frontend/app.js` 
+Line 15: error  'err' is defined but never used  no-unused-vars
+Line 24: error  'err' is defined but never used  no-unused-vars
+I added `console.error(err);` to lines 16 and 26 to cater offset this error thrown by eslint
