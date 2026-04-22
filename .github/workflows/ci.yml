@@ -307,6 +307,15 @@ jobs:
 
       - name: Start the full stack
         run: docker compose -f docker-compose.yml up -d
+        env:
+          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          API_HOST: 0.0.0.0
+          API_PORT: ${{ secrets.API_PORT }}
+          API_URL: ${{ secrets.API_URL }}
+          FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
+          NODE_ENV: ${{ secrets.NODE_ENV }}
 
       - name: Wait for stack to be ready
         run: |
