@@ -11,22 +11,51 @@ HEALTH_TIMEOUT=60
 SHORT_SHA="${SHA:0:7}"
 OLD_CONTAINER="${SERVICE}"
 NEW_CONTAINER="${SERVICE}_${SHORT_SHA}"
-DOCKER_NETWORK="app"
+DOCKER_NETWORK="app_network"
 
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
+
+# Load runtime env vars from the deploy host's .env file
+ENV_FILE="${ENV_FILE:-/opt/app/.env}"
+if [ -f "${ENV_FILE}" ]; then
+  # export only KEY=VALUE lines, skip comments and blanks
+  set -a
+  # shellcheck source=/dev/null
+  source "${ENV_FILE}"
+  set +a
+  log "Loaded env from ${ENV_FILE}"
+else
+  log "WARNING: ${ENV_FILE} not found — services may lack required env vars"
+fi
 
 log "Pulling ${IMAGE} ..."
 docker pull "${IMAGE}"
 
 case "${SERVICE}" in
   api)
-    RUN_FLAGS="-p 8000:8000 -e REDIS_HOST=redis --network ${DOCKER_NETWORK}"
+    RUN_FLAGS="-p ${API_PORT:-8000}:8000
+      -e REDIS_HOST=${REDIS_HOST:-redis}
+      -e REDIS_PORT=${REDIS_PORT:-6379}
+      -e REDIS_PASSWORD=${REDIS_PASSWORD}
+      -e API_HOST=0.0.0.0
+      -e API_PORT=${API_PORT:-8000}
+      -e PYTHONDONTWRITEBYTECODE=1
+      -e PYTHONUNBUFFERED=1
+      --network ${DOCKER_NETWORK}"
     ;;
   worker)
-    RUN_FLAGS="-e REDIS_HOST=redis --network ${DOCKER_NETWORK}"
+    RUN_FLAGS="-e REDIS_HOST=${REDIS_HOST:-redis}
+      -e REDIS_PORT=${REDIS_PORT:-6379}
+      -e REDIS_PASSWORD=${REDIS_PASSWORD}
+      -e PYTHONDONTWRITEBYTECODE=1
+      -e PYTHONUNBUFFERED=1
+      --network ${DOCKER_NETWORK}"
     ;;
   frontend)
-    RUN_FLAGS="-p 3000:3000 -e API_URL=http://api:8000 --network ${DOCKER_NETWORK}"
+    RUN_FLAGS="-p ${FRONTEND_PORT:-3000}:3000
+      -e API_URL=${API_URL:-http://api:8000}
+      -e NODE_ENV=${NODE_ENV:-production}
+      --network ${DOCKER_NETWORK}"
     ;;
   *)
     log "ERROR: unknown service '${SERVICE}'" >&2
@@ -36,7 +65,7 @@ esac
 
 log "Starting new container '${NEW_CONTAINER}' ..."
 # shellcheck disable=SC2086
-docker run -d --name "${NEW_CONTAINER}" ${RUN_FLAGS} "${IMAGE}"
+docker run -d --name "${NEW_CONTAINER}" --restart unless-stopped ${RUN_FLAGS} "${IMAGE}"
 
 log "Waiting up to ${HEALTH_TIMEOUT}s for health check ..."
 ELAPSED=0

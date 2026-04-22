@@ -332,6 +332,15 @@ jobs:
       - name: Tear down stack
         if: always()
         run: docker compose -f docker-compose.yml down -v --remove-orphans
+        env:
+          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          API_HOST: 0.0.0.0
+          API_PORT: ${{ secrets.API_PORT }}
+          API_URL: ${{ secrets.API_URL }}
+          FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
+          NODE_ENV: ${{ secrets.NODE_ENV }}
 
 
   deploy:
@@ -347,12 +356,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure SSH
-        run: |
-          install -m 700 -d ~/.ssh
-          install -m 600 /dev/null ~/.ssh/deploy_key
-          printf '%s\n' "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+    #   - name: Configure SSH
+    #     run: |
+    #       install -m 700 -d ~/.ssh
+    #       install -m 600 /dev/null ~/.ssh/deploy_key
+    #       printf '%s\n' "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/deploy_key
+    #       ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Rolling update — api
         env:
