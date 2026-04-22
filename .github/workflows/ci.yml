@@ -1,0 +1,376 @@
+name: CI/CD
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  SHORT_SHA: ${{ github.sha }}
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Lint Python — api
+        run: flake8 api/main.py
+
+      - name: Lint Python — worker
+        run: flake8 worker/worker.py
+
+      - name: Lint Python — tests
+        run: flake8 api/tests/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install ESLint
+        run: npm install -g eslint@8
+
+      - name: Lint JavaScript — frontend/app.js
+        run: eslint app.js
+        working-directory: frontend
+
+      - name: Lint Dockerfile — api
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: api/Dockerfile
+
+      - name: Lint Dockerfile — worker
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: worker/Dockerfile
+
+      - name: Lint Dockerfile — frontend
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: frontend/Dockerfile
+
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runtime + dev dependencies
+        run: pip install -r api/requirements.txt -r api/requirements-dev.txt
+
+      - name: Run pytest with coverage
+        working-directory: api
+        run: |
+          pytest tests/ \
+            --cov=main \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: api/coverage.xml
+          retention-days: 7
+
+
+  build:
+    name: Build Images
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable BuildKit
+        run: echo "DOCKER_BUILDKIT=1" >> "$GITHUB_ENV"
+
+      - name: Build api image
+        run: |
+          docker build \
+            -t localhost:5000/api:${{ github.sha }} \
+            -t localhost:5000/api:latest \
+            ./api
+
+      - name: Build worker image
+        run: |
+          docker build \
+            -t localhost:5000/worker:${{ github.sha }} \
+            -t localhost:5000/worker:latest \
+            ./worker
+
+      - name: Build frontend image
+        run: |
+          docker build \
+            -t localhost:5000/frontend:${{ github.sha }} \
+            -t localhost:5000/frontend:latest \
+            ./frontend
+
+      - name: Push images to local registry
+        run: |
+          for svc in api worker frontend; do
+            docker push localhost:5000/$svc:${{ github.sha }}
+            docker push localhost:5000/$svc:latest
+          done
+
+      - name: Save images as gzipped tarballs
+        run: |
+          mkdir -p /tmp/images
+          for svc in api worker frontend; do
+            docker save localhost:5000/$svc:${{ github.sha }} \
+              | gzip > /tmp/images/$svc.tar.gz
+          done
+
+      - name: Upload image tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images-${{ github.sha }}
+          path: /tmp/images/
+          retention-days: 1
+
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          SHA=${{ github.sha }}
+          for svc in api worker frontend; do
+            docker tag localhost:5000/$svc:$SHA ghcr.io/$REPO/$svc:$SHA
+            docker tag localhost:5000/$svc:$SHA ghcr.io/$REPO/$svc:latest
+            docker push ghcr.io/$REPO/$svc:$SHA
+            docker push ghcr.io/$REPO/$svc:latest
+          done
+
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      security-events: write   # upload SARIF to GitHub Security tab
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download image tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images-${{ github.sha }}
+          path: /tmp/images
+
+      - name: Load and tag images
+        run: |
+          SHA=${{ github.sha }}
+          for svc in api worker frontend; do
+            docker load < /tmp/images/$svc.tar.gz
+            # Retag to a registry-free name so Trivy uses the local daemon
+            # and doesn't attempt to pull from localhost:5000.
+            docker tag localhost:5000/$svc:$SHA $svc:$SHA
+          done
+
+      - name: Create SARIF output directory
+        run: mkdir -p trivy-results
+
+      # ── Scan each image (continue-on-error so all three are always scanned)
+      - name: Scan api image
+        id: scan-api
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: api:${{ github.sha }}
+          format: sarif
+          output: trivy-results/api.sarif
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Scan worker image
+        id: scan-worker
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: worker:${{ github.sha }}
+          format: sarif
+          output: trivy-results/worker.sarif
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Scan frontend image
+        id: scan-frontend
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: frontend:${{ github.sha }}
+          format: sarif
+          output: trivy-results/frontend.sarif
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      # ── Upload SARIF regardless of scan outcome ───────────────────────────
+      - name: Upload Trivy SARIF results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results/
+          category: trivy
+
+      # ── Single failure gate after all three scans have run ────────────────
+      - name: Fail if any image has fixable CRITICAL vulnerabilities
+        if: |
+          steps.scan-api.outcome     == 'failure' ||
+          steps.scan-worker.outcome  == 'failure' ||
+          steps.scan-frontend.outcome == 'failure'
+        run: |
+          echo "One or more images contain fixable CRITICAL vulnerabilities."
+          echo "Review the Security tab for details."
+          exit 1
+
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: security-scan
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download image tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images-${{ github.sha }}
+          path: /tmp/images
+
+      - name: Load and tag images for compose
+        run: |
+          SHA=${{ github.sha }}
+          for svc in api worker frontend; do
+            docker load < /tmp/images/$svc.tar.gz
+            docker tag localhost:5000/$svc:$SHA $svc:ci
+          done
+
+      - name: Start the full stack
+        run: docker compose -f docker-compose.yml up -d
+
+      - name: Wait for stack to be ready
+        run: |
+          echo "Waiting for frontend to accept HTTP connections..."
+          timeout 120 bash -c \
+            'until curl -sf http://localhost:3000/ > /dev/null; do
+               sleep 3
+             done'
+          echo "Stack is ready."
+
+      - name: Run integration test
+        run: bash scripts/integration-test.sh
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.yml down -v --remove-orphans
+
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: integration-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+
+    environment: production   # enables required-reviewers gate if configured
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          install -m 600 /dev/null ~/.ssh/deploy_key
+          printf '%s\n' "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Rolling update — api
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          REPO: ${{ github.repository }}
+          SHA:  ${{ github.sha }}
+        run: |
+          REPO=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+          ssh -i ~/.ssh/deploy_key \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "IMAGE=ghcr.io/${REPO}/api:${SHA} SERVICE=api SHA=${SHA} bash -s" \
+              < scripts/rolling-update.sh
+
+      - name: Rolling update — worker
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          REPO: ${{ github.repository }}
+          SHA:  ${{ github.sha }}
+        run: |
+          REPO=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+          ssh -i ~/.ssh/deploy_key \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "IMAGE=ghcr.io/${REPO}/worker:${SHA} SERVICE=worker SHA=${SHA} bash -s" \
+              < scripts/rolling-update.sh
+
+      - name: Rolling update — frontend
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          REPO: ${{ github.repository }}
+          SHA:  ${{ github.sha }}
+        run: |
+          REPO=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+          ssh -i ~/.ssh/deploy_key \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "IMAGE=ghcr.io/${REPO}/frontend:${SHA} SERVICE=frontend SHA=${SHA} bash -s" \
+              < scripts/rolling-update.sh
