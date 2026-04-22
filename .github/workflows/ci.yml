@@ -38,11 +38,12 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install ESLint
-        run: npm install -g eslint@8
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
 
       - name: Lint JavaScript — frontend/app.js
-        run: eslint app.js
+        run: npx eslint app.js
         working-directory: frontend
 
       - name: Lint Dockerfile — api
