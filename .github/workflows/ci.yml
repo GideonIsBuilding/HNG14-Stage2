@@ -248,12 +248,26 @@ jobs:
           ignore-unfixed: true
 
       # ── Upload SARIF regardless of scan outcome ───────────────────────────
-      - name: Upload Trivy SARIF results
+      - name: Upload Trivy SARIF — api
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: trivy-results/
-          category: trivy
+            sarif_file: trivy-results/api.sarif
+            category: trivy-api
+
+      - name: Upload Trivy SARIF — worker
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+            sarif_file: trivy-results/worker.sarif
+            category: trivy-worker
+
+      - name: Upload Trivy SARIF — frontend
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+            sarif_file: trivy-results/frontend.sarif
+            category: trivy-frontend
 
       # ── Single failure gate after all three scans have run ────────────────
       - name: Fail if any image has fixable CRITICAL vulnerabilities
