@@ -1,4 +1,4 @@
-# HNG14 Stage 2 DevOps Task
+# Job Processor Task
 
 This repository runs a four-service job-processing stack:
 
